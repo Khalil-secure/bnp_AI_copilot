@@ -145,7 +145,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 class Q(BaseModel): prompt: str
 class Utterance(BaseModel): text: str
-class QuickRequest(BaseModel): keyword_id: str; client_id: str = ""; client_name: str = ""
+class QuickRequest(BaseModel): keyword_id: int; client_id: str = ""; client_name: str = ""
 
 @app.get("/health")
 def health(): return {"status": "ok"}
