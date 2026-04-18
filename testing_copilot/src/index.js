@@ -16,10 +16,7 @@ const BACKEND_READY_TIMEOUT = 15000;
 function startPythonBackend() {
     const backendScript = path.join(__dirname, '..', 'backend', 'agent.py');
 
-    // Prefer the venv python from the sample project (already has strands installed)
-    const venvPython = path.join(
-        __dirname, '..', '..', 'sample-once-upon-agentic-ai', '.venv', 'Scripts', 'python.exe'
-    );
+    const venvPython = path.join(__dirname, '..', '..', '.venv', 'Scripts', 'python.exe');
     const pythonBin = require('fs').existsSync(venvPython) ? venvPython : 'python';
 
     console.log(`[Backend] Starting with: ${pythonBin}`);
@@ -104,6 +101,13 @@ ipcMain.handle('check-backend', async () => {
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+    // Grant microphone permission for Web Speech API (voice + meeting modes)
+    app.on('web-contents-created', (_, contents) => {
+        contents.session.setPermissionRequestHandler((wc, permission, callback) => {
+            callback(permission === 'media' || permission === 'microphone');
+        });
+    });
+
     startPythonBackend();
 
     mainWindow = createWindow();
