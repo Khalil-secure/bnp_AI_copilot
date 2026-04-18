@@ -1,143 +1,72 @@
+'use strict';
 if (require('electron-squirrel-startup')) process.exit(0);
 
-const { app, ipcMain, BrowserWindow } = require('electron');
+const { app, ipcMain, BrowserWindow, session } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const http = require('http');
-const { createWindow } = require('./utils/window');
+
+app.commandLine.appendSwitch('enable-features', 'WebSpeechAPI,SpeechSynthesis');
+
+const PROJECT_ROOT  = path.join(__dirname, '..', '..');
+const VENV_SCRIPTS  = path.join(PROJECT_ROOT, '.venv', 'Scripts');
+const BACKEND_SCRIPT = path.join(PROJECT_ROOT, 'testing_copilot', 'backend', 'agent.py');
+const BACKEND_URL   = 'http://127.0.0.1:7799';
 
 let mainWindow = null;
-let pythonProcess = null;
-const BACKEND_URL = 'http://127.0.0.1:7799';
-const BACKEND_READY_TIMEOUT = 15000;
+let pyProcess  = null;
 
-// ─── Python backend lifecycle ─────────────────────────────────────────────────
-
-function startPythonBackend() {
-    const backendScript = path.join(__dirname, '..', 'backend', 'agent.py');
-
-    const venvPython = path.join(__dirname, '..', '..', '.venv', 'Scripts', 'python.exe');
-    const pythonBin = require('fs').existsSync(venvPython) ? venvPython : 'python';
-
-    console.log(`[Backend] Starting with: ${pythonBin}`);
-
-    pythonProcess = spawn(pythonBin, [backendScript], {
+function startBackend() {
+    pyProcess = spawn('python', [BACKEND_SCRIPT], {
+        cwd: PROJECT_ROOT,
         stdio: ['ignore', 'pipe', 'pipe'],
-        cwd: path.join(__dirname, '..', 'backend'),
+        env: { ...process.env, PATH: VENV_SCRIPTS + ';' + process.env.PATH },
     });
-
-    pythonProcess.stdout.on('data', d => process.stdout.write(`[Backend] ${d}`));
-    pythonProcess.stderr.on('data', d => process.stderr.write(`[Backend] ${d}`));
-    pythonProcess.on('exit', code => console.log(`[Backend] Exited with code ${code}`));
+    pyProcess.stdout.on('data', d => process.stdout.write(`[py] ${d}`));
+    pyProcess.stderr.on('data', d => process.stderr.write(`[py] ${d}`));
 }
 
-function waitForBackend(timeout = BACKEND_READY_TIMEOUT) {
+function waitForBackend(timeout = 25000) {
     return new Promise((resolve, reject) => {
         const deadline = Date.now() + timeout;
-
-        function ping() {
-            http.get(`${BACKEND_URL}/health`, res => {
-                if (res.statusCode === 200) return resolve();
-                retry();
+        const ping = () => {
+            http.get(`${BACKEND_URL}/health`, r => {
+                r.statusCode === 200 ? resolve() : retry();
             }).on('error', retry);
-        }
-
-        function retry() {
-            if (Date.now() > deadline) return reject(new Error('Backend did not start in time'));
-            setTimeout(ping, 500);
-        }
-
+        };
+        const retry = () => Date.now() > deadline ? reject() : setTimeout(ping, 700);
         ping();
     });
 }
 
-// ─── IPC: send prompt to Python agent ────────────────────────────────────────
-
-ipcMain.handle('ask-copilot', async (event, prompt) => {
-    return new Promise((resolve, reject) => {
-        const body = JSON.stringify({ prompt });
-        const options = {
-            hostname: '127.0.0.1',
-            port: 7799,
-            path: '/ask',
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(body),
-            },
-        };
-
-        const req = http.request(options, res => {
-            let data = '';
-            res.on('data', chunk => { data += chunk; });
-            res.on('end', () => {
-                try {
-                    const json = JSON.parse(data);
-                    resolve(json);
-                } catch {
-                    resolve({ error: 'Invalid response from backend' });
-                }
-            });
-        });
-
-        req.on('error', err => resolve({ error: err.message }));
-        req.setTimeout(60000, () => {
-            req.destroy();
-            resolve({ error: 'Request timed out (60s)' });
-        });
-        req.write(body);
-        req.end();
-    });
-});
-
-ipcMain.handle('check-backend', async () => {
-    return new Promise(resolve => {
-        http.get(`${BACKEND_URL}/health`, res => {
-            resolve(res.statusCode === 200);
-        }).on('error', () => resolve(false));
-    });
-});
-
-// ─── App lifecycle ────────────────────────────────────────────────────────────
+ipcMain.on('close-app',    () => { if (pyProcess) pyProcess.kill(); app.quit(); });
+ipcMain.on('minimize-app', () => mainWindow && mainWindow.minimize());
 
 app.whenReady().then(async () => {
-    // Grant microphone permission for Web Speech API (voice + meeting modes)
-    app.on('web-contents-created', (_, contents) => {
-        contents.session.setPermissionRequestHandler((wc, permission, callback) => {
-            callback(permission === 'media' || permission === 'microphone');
-        });
+    session.defaultSession.setPermissionRequestHandler((_, perm, cb) =>
+        cb(['media', 'microphone', 'audioCapture'].includes(perm))
+    );
+
+    mainWindow = new BrowserWindow({
+        width: 480,
+        height: 700,
+        frame: false,
+        transparent: false,
+        resizable: true,
+        alwaysOnTop: true,
+        backgroundColor: '#1a1a2e',
+        webPreferences: { nodeIntegration: true, contextIsolation: false },
     });
+    mainWindow.loadFile(path.join(__dirname, 'index.html'));
 
-    startPythonBackend();
+    startBackend();
 
-    mainWindow = createWindow();
-
-    // Notify frontend when backend is ready
     try {
         await waitForBackend();
-        console.log('[Backend] Ready');
-        if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('backend-ready');
-        }
-    } catch (err) {
-        console.error('[Backend] Failed to start:', err.message);
-        if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('backend-error', err.message);
-        }
+        mainWindow.webContents.send('backend-ready');
+    } catch {
+        mainWindow.webContents.send('backend-error', 'Backend failed to start');
     }
 });
 
-app.on('window-all-closed', () => {
-    if (pythonProcess) pythonProcess.kill();
-    if (process.platform !== 'darwin') app.quit();
-});
-
-app.on('before-quit', () => {
-    if (pythonProcess) pythonProcess.kill();
-});
-
-app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-        mainWindow = createWindow();
-    }
-});
+app.on('window-all-closed', () => { if (pyProcess) pyProcess.kill(); app.quit(); });
