@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: sales-copilot-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: AWS_ACCESS_KEY_ID
+        sync: false          # set manually in Render dashboard
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_SESSION_TOKEN
+        sync: false          # leave empty if using long-term IAM keys
+      - key: AWS_DEFAULT_REGION
+        value: us-west-2
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_DEFAULT_REPO
+        sync: false

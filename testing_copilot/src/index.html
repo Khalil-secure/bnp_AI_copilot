@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>Sales Copilot</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:rgba(8,8,14,0.92);
+  --surface:rgba(255,255,255,0.05);
+  --surface2:rgba(255,255,255,0.08);
+  --border:rgba(255,255,255,0.09);
+  --text:#e8e8f0;
+  --dim:#666;
+  --accent:#7c6af7;
+  --accent2:#a78bfa;
+  --green:#4ade80;
+  --red:#f87171;
+  --yellow:#fbbf24;
+  --orange:#fb923c;
+}
+html,body{width:100%;height:100%;background:transparent;overflow:hidden;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:12.5px;color:var(--text)}
+
+#app{width:100%;height:100%;background:var(--bg);border:1px solid var(--border);
+  border-radius:12px;display:flex;flex-direction:column;overflow:hidden;
+  backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px)}
+
+/* ── HEADER ── */
+#hdr{display:flex;align-items:center;gap:8px;padding:9px 12px;
+  border-bottom:1px solid var(--border);-webkit-app-region:drag;flex-shrink:0}
+#dot{width:7px;height:7px;border-radius:50%;background:var(--accent);
+  box-shadow:0 0 8px var(--accent);flex-shrink:0}
+#title{font-size:11px;font-weight:700;letter-spacing:.06em;opacity:.8;flex-shrink:0}
+#status{font-size:10px;padding:2px 7px;border-radius:20px;background:var(--surface);
+  border:1px solid var(--border);color:var(--dim);margin-left:2px}
+#status.ready{color:var(--green);border-color:rgba(74,222,128,.3)}
+#status.thinking{color:var(--accent2);border-color:rgba(167,139,250,.3)}
+#status.error{color:var(--red);border-color:rgba(248,113,113,.3)}
+#status.listening{color:var(--orange);border-color:rgba(251,146,60,.3)}
+#status.meeting{color:var(--yellow);border-color:rgba(251,191,36,.3)}
+
+/* Client selector */
+#client-row{display:flex;align-items:center;gap:6px;margin-left:auto;-webkit-app-region:no-drag}
+#client-label{font-size:10px;color:var(--dim)}
+#client-select{background:var(--surface2);border:1px solid var(--border);color:var(--text);
+  font-size:11px;padding:3px 6px;border-radius:6px;outline:none;cursor:pointer;max-width:140px}
+#client-select option{background:#111;color:var(--text)}
+
+#hdr-btns{display:flex;gap:4px;-webkit-app-region:no-drag;margin-left:6px}
+.hbtn{background:none;border:none;color:var(--dim);cursor:pointer;font-size:13px;
+  padding:2px 5px;border-radius:4px;transition:color .15s}
+.hbtn:hover{color:var(--text)}
+
+/* ── TABS ── */
+#tabs{display:flex;border-bottom:1px solid var(--border);flex-shrink:0}
+.tab{flex:1;padding:7px 4px;font-size:11px;font-weight:600;text-align:center;
+  cursor:pointer;color:var(--dim);border-bottom:2px solid transparent;
+  transition:all .15s;letter-spacing:.04em;-webkit-app-region:no-drag}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--accent2);border-bottom-color:var(--accent)}
+
+/* ── PANELS ── */
+.panel{display:none;flex-direction:column;flex:1;overflow:hidden}
+.panel.active{display:flex}
+
+/* Keywords panel */
+#kw-panel{padding:10px 10px 6px}
+#kw-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px}
+.kw-btn{background:var(--surface2);border:1px solid var(--border);color:var(--text);
+  border-radius:8px;padding:7px 4px;font-size:10.5px;cursor:pointer;text-align:center;
+  transition:all .15s;line-height:1.3}
+.kw-btn:hover{background:rgba(124,106,247,.15);border-color:rgba(124,106,247,.4);color:var(--accent2)}
+.kw-btn:active{transform:scale(.97)}
+.kw-btn .icon{display:block;font-size:16px;margin-bottom:2px}
+.kw-btn .lbl{display:block;font-size:9.5px;opacity:.8}
+
+#meeting-bar{display:flex;align-items:center;gap:8px;padding:6px 10px;
+  border-top:1px solid var(--border);background:rgba(251,191,36,.05)}
+#meeting-toggle{background:rgba(251,191,36,.15);border:1px solid rgba(251,191,36,.3);
+  color:var(--yellow);border-radius:8px;padding:5px 10px;font-size:10.5px;
+  cursor:pointer;transition:all .15s;font-weight:600}
+#meeting-toggle.active{background:rgba(251,191,36,.25);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.7}}
+#meeting-info{font-size:10px;color:var(--dim)}
+
+/* Voice panel */
+#voice-panel{align-items:center;justify-content:center;gap:14px;padding:16px}
+#mic-btn{width:72px;height:72px;border-radius:50%;background:var(--surface2);
+  border:2px solid var(--border);cursor:pointer;font-size:28px;
+  display:flex;align-items:center;justify-content:center;
+  transition:all .2s;position:relative}
+#mic-btn:hover{border-color:var(--accent);background:rgba(124,106,247,.15)}
+#mic-btn.recording{border-color:var(--red);background:rgba(248,113,113,.15);
+  animation:mic-pulse 1.2s ease-in-out infinite}
+@keyframes mic-pulse{0%,100%{box-shadow:0 0 0 0 rgba(248,113,113,.4)}
+  50%{box-shadow:0 0 0 10px rgba(248,113,113,0)}}
+#voice-label{font-size:11px;color:var(--dim);text-align:center}
+#voice-interim{font-size:11px;color:var(--accent2);font-style:italic;
+  text-align:center;min-height:16px;padding:0 12px}
+
+/* Prompt panel */
+#prompt-panel{padding:10px}
+#prompt-input{width:100%;background:var(--surface);border:1px solid var(--border);
+  border-radius:8px;padding:8px 10px;color:var(--text);font-size:12px;
+  font-family:inherit;resize:none;outline:none;min-height:60px;max-height:100px;
+  line-height:1.5;transition:border-color .2s}
+#prompt-input::placeholder{color:var(--dim)}
+#prompt-input:focus{border-color:var(--accent)}
+#ask-btn{width:100%;margin-top:7px;background:var(--accent);border:none;
+  border-radius:8px;padding:8px;color:#fff;font-size:12px;font-weight:700;
+  cursor:pointer;transition:opacity .15s}
+#ask-btn:hover:not(:disabled){opacity:.85}
+#ask-btn:disabled{opacity:.4;cursor:not-allowed}
+
+/* ── RESPONSE ── */
+#response-area{flex:1;overflow-y:auto;padding:10px 14px;
+  scrollbar-width:thin;scrollbar-color:var(--border) transparent;flex-shrink:0;
+  border-top:1px solid var(--border)}
+#response-area::-webkit-scrollbar{width:3px}
+#response-area::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+
+#placeholder{color:var(--dim);font-size:11px;text-align:center;margin-top:20px;line-height:2}
+#thinking{display:none;color:var(--accent2);font-size:11px;padding:6px 0}
+#thinking::after{content:'...';animation:dots 1.4s steps(4,end) infinite}
+@keyframes dots{0%{content:''}25%{content:'.'}50%{content:'..'}75%{content:'...'}100%{content:''}}
+
+#response-content{display:none;font-size:12.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
+#response-label{font-size:9px;color:var(--dim);letter-spacing:.08em;text-transform:uppercase;margin-bottom:5px}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- HEADER -->
+  <div id="hdr">
+    <div id="dot"></div>
+    <span id="title">SALES COPILOT</span>
+    <span id="status" class="loading">Starting…</span>
+    <div id="client-row">
+      <span id="client-label">Client:</span>
+      <select id="client-select"><option value="">— select —</option></select>
+    </div>
+    <div id="hdr-btns">
+      <button class="hbtn" id="clear-btn" title="Clear">✕</button>
+      <button class="hbtn" id="min-btn"   title="Minimize">—</button>
+    </div>
+  </div>
+
+  <!-- TABS -->
+  <div id="tabs">
+    <div class="tab active" data-tab="kw">🏷 Keywords</div>
+    <div class="tab"        data-tab="voice">🎙 Voice</div>
+    <div class="tab"        data-tab="prompt">⌨ Prompt</div>
+  </div>
+
+  <!-- PANEL: KEYWORDS -->
+  <div class="panel active" id="kw-panel">
+    <div id="kw-grid"><!-- filled by JS --></div>
+    <div id="meeting-bar">
+      <button id="meeting-toggle">🎙 Meeting Mode</button>
+      <span id="meeting-info">Off — say a trigger phrase to fire agents</span>
+    </div>
+  </div>
+
+  <!-- PANEL: VOICE -->
+  <div class="panel" id="voice-panel">
+    <button id="mic-btn">🎙</button>
+    <div id="voice-label">Click to speak your question</div>
+    <div id="voice-interim"></div>
+  </div>
+
+  <!-- PANEL: PROMPT -->
+  <div class="panel" id="prompt-panel">
+    <textarea id="prompt-input" placeholder="Ask anything about a client…" rows="3" disabled></textarea>
+    <button id="ask-btn" disabled>Ask</button>
+  </div>
+
+  <!-- RESPONSE -->
+  <div id="response-area">
+    <div id="placeholder">Select a client, pick a keyword or ask a question.</div>
+    <div id="thinking">Thinking</div>
+    <div id="response-content">
+      <div id="response-label"></div>
+      <div id="response-text"></div>
+    </div>
+  </div>
+
+</div>
+<script src="renderer.js"></script>
+</body>
+</html>
