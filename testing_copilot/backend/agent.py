@@ -1,6 +1,7 @@
 """
-Sales Copilot Backend — merged with AI_as_busness_bnp
-Modes: Keywords quick-fire | Voice transcript | Classic prompt | Meeting monitor
+Sales Copilot Backend
+Shell: Electron (testing_copilot)
+Core: WHO / WHAT / WHEN / CONTEXT orchestrator (main.py architecture)
 """
 import asyncio, os, re, sys, json, requests, concurrent.futures
 import uvicorn
@@ -33,11 +34,8 @@ load_env(os.path.join(PROJECT_ROOT, ".env"))
 GITHUB_TOKEN        = os.getenv("GITHUB_TOKEN", "")
 GITHUB_DEFAULT_REPO = os.getenv("GITHUB_DEFAULT_REPO", "")
 
-# ── Banking tools ─────────────────────────────────────────────────────────────
-from agents.who_agent     import get_client_profile, get_household, get_projects
-from agents.what_agent    import get_contracts, get_product_features, get_securities
-from agents.when_agent    import get_contract_valuation, get_security_prices, get_market_indices
-from agents.context_agent import get_financial_flows, get_events
+# ── Core: 4-agent orchestrator tools ─────────────────────────────────────────
+from agents.orchestrator import ask_who, ask_what, ask_when, ask_context
 from agents.trigger import is_trigger, QuestionExtractor
 
 # ── GitHub tool ───────────────────────────────────────────────────────────────
@@ -65,18 +63,26 @@ def get_repo_status(repo: str = "") -> str:
     for c in commits[:3]: lines.append(f"- {c['commit']['message'].split(chr(10))[0][:60]}")
     return "\n".join(lines)
 
-# ── Concise agent ─────────────────────────────────────────────────────────────
+# ── Copilot orchestrator (concise output for live meeting UI) ─────────────────
 SYSTEM_PROMPT = """You are Sales Copilot — AI assistant for a banker in a LIVE client meeting.
 
-CRITICAL RULES:
+You have 4 specialist agents:
+- WHO  : client identity, household, financial goals
+- WHAT : contracts, products, securities held
+- WHEN : valuation history, prices, market indices
+- CONTEXT: financial flows, events & interactions
+
+For each question: delegate to the right agent(s), then synthesise.
+
+CRITICAL OUTPUT RULES:
 - Max 3 bullet points. No tables. No raw numbers dump.
 - Round numbers: €50k not €50,000.
 - Start with the single most important fact.
 - Speak like a colleague whispering a quick briefing, not a report.
 - Same language as the question (FR or EN).
 
-GOOD example: "Mathieu holds €754k total. Biggest chunk: life insurance (€443k, dynamic profile). 3 projects: retirement, wealth transfer, secondary home."
-BAD example: [any table or list longer than 3 items]
+GOOD: "Mathieu holds €754k total. Biggest chunk: life insurance (€443k, dynamic profile). 3 projects: retirement, wealth transfer, secondary home."
+BAD: [any table or list longer than 3 items]
 """
 
 model = BedrockModel(
@@ -84,37 +90,31 @@ model = BedrockModel(
     region_name=os.getenv("AWS_DEFAULT_REGION", "us-west-2"),
 )
 
-agent = Agent(
+copilot = Agent(
     model=model,
-    tools=[
-        get_client_profile, get_household, get_projects,
-        get_contracts, get_product_features, get_securities,
-        get_contract_valuation, get_security_prices, get_market_indices,
-        get_financial_flows, get_events,
-        get_repo_status,
-    ],
+    tools=[ask_who, ask_what, ask_when, ask_context, get_repo_status],
     system_prompt=SYSTEM_PROMPT,
 )
 
 # ── Keywords catalog ──────────────────────────────────────────────────────────
 KEYWORDS = [
-    {"id": "portfolio",    "label": "Portfolio",     "icon": "💼", "template": "Give me a 3-bullet portfolio snapshot for {client}. Total value, biggest asset, risk profile."},
-    {"id": "contracts",    "label": "Contracts",     "icon": "📋", "template": "List contracts for {client} in one line each. Product name and current value only."},
-    {"id": "risk",         "label": "Risk Profile",  "icon": "⚡", "template": "What is {client}'s risk profile and market sensitivity? One sentence."},
-    {"id": "goals",        "label": "Goals",         "icon": "🎯", "template": "What are {client}'s top financial goals and timeline? Max 3 bullets."},
-    {"id": "recent",       "label": "Recent Events", "icon": "📅", "template": "What happened recently with {client}? Last 3 interactions or life events only."},
-    {"id": "cashflow",     "label": "Cash Flow",     "icon": "💰", "template": "Quick cash flow summary for {client}: monthly income, expenses, savings capacity. 2 sentences."},
-    {"id": "performance",  "label": "Performance",   "icon": "📈", "template": "How has {client}'s portfolio performed over time? Give trend in 2 sentences."},
-    {"id": "profile",      "label": "Who is",        "icon": "👤", "template": "Who is {client}? Age, job, family, city, how long with the bank. 3 bullets max."},
-    {"id": "securities",   "label": "Securities",    "icon": "📊", "template": "What funds and securities does {client} hold? Top 3 positions only."},
-    {"id": "household",    "label": "Household",     "icon": "🏠", "template": "Family situation of {client}: spouse, children, property. 2 sentences."},
+    {"id": "portfolio",   "label": "Portfolio",     "icon": "💼", "template": "Give me a 3-bullet portfolio snapshot for {client}. Total value, biggest asset, risk profile."},
+    {"id": "contracts",   "label": "Contracts",     "icon": "📋", "template": "List contracts for {client} in one line each. Product name and current value only."},
+    {"id": "risk",        "label": "Risk Profile",  "icon": "⚡", "template": "What is {client}'s risk profile and market sensitivity? One sentence."},
+    {"id": "goals",       "label": "Goals",         "icon": "🎯", "template": "What are {client}'s top financial goals and timeline? Max 3 bullets."},
+    {"id": "recent",      "label": "Recent Events", "icon": "📅", "template": "What happened recently with {client}? Last 3 interactions or life events only."},
+    {"id": "cashflow",    "label": "Cash Flow",     "icon": "💰", "template": "Quick cash flow summary for {client}: monthly income, expenses, savings capacity. 2 sentences."},
+    {"id": "performance", "label": "Performance",   "icon": "📈", "template": "How has {client}'s portfolio performed over time? Give trend in 2 sentences."},
+    {"id": "profile",     "label": "Who is",        "icon": "👤", "template": "Who is {client}? Age, job, family, city, how long with the bank. 3 bullets max."},
+    {"id": "securities",  "label": "Securities",    "icon": "📊", "template": "What funds and securities does {client} hold? Top 3 positions only."},
+    {"id": "household",   "label": "Household",     "icon": "🏠", "template": "Family situation of {client}: spouse, children, property. 2 sentences."},
 ]
 
 # ── Clients list ──────────────────────────────────────────────────────────────
 def get_clients_list():
     from agents.shared import get_records
     records = get_records("01_Profil_Client")
-    return [{"id": r["client_id"], "name": f"{r['prenom']} {r['nom']}", "archetype": r.get("archetype","")} for r in records]
+    return [{"id": r["client_id"], "name": f"{r['prenom']} {r['nom']}", "archetype": r.get("archetype", "")} for r in records]
 
 # ── Meeting buffer ────────────────────────────────────────────────────────────
 transcript_buffer: deque[str] = deque(maxlen=30)
@@ -122,11 +122,10 @@ extractor = QuestionExtractor()
 _last_search: dict = {}
 
 def _extract_text(result) -> str:
-    """Extract plain text from a Strands AgentResult."""
     try:
         content = result.message["content"]
         if isinstance(content, list):
-            return " ".join(b.get("text","") for b in content if isinstance(b,dict) and "text" in b).strip()
+            return " ".join(b.get("text", "") for b in content if isinstance(b, dict) and "text" in b).strip()
         return str(content).strip()
     except Exception:
         return str(result).strip()
@@ -134,7 +133,7 @@ def _extract_text(result) -> str:
 async def _run_search(question: str):
     global _last_search
     try:
-        result = await asyncio.to_thread(agent, question)
+        result = await asyncio.to_thread(copilot, question)
         _last_search = {"question": question, "response": _extract_text(result), "status": "done"}
     except Exception as e:
         _last_search = {"question": question, "error": str(e), "status": "error"}
@@ -145,7 +144,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 class Q(BaseModel): prompt: str
 class Utterance(BaseModel): text: str
-class QuickRequest(BaseModel): keyword_id: int; client_id: str = ""; client_name: str = ""
+class QuickRequest(BaseModel): keyword_id: str; client_id: str = ""; client_name: str = ""
 
 @app.get("/health")
 def health(): return {"status": "ok"}
@@ -160,24 +159,20 @@ def keywords(): return JSONResponse(KEYWORDS)
 
 @app.post("/quick")
 def quick(req: QuickRequest):
-    """Keyword quick-fire with optional client context."""
     kw = next((k for k in KEYWORDS if k["id"] == req.keyword_id), None)
     if not kw: return JSONResponse({"error": "Unknown keyword"}, status_code=400)
     client = req.client_name or req.client_id or "the client"
     question = kw["template"].replace("{client}", client)
     if req.client_id: question += f" (client_id: {req.client_id})"
     try:
-        result = agent(question)
-        return JSONResponse({"response": _extract_text(result)})
+        return JSONResponse({"response": _extract_text(copilot(question))})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 @app.post("/ask")
 def ask(req: Q):
-    """Classic prompt — direct question."""
     try:
-        result = agent(req.prompt)
-        return JSONResponse({"response": _extract_text(result)})
+        return JSONResponse({"response": _extract_text(copilot(req.prompt))})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
