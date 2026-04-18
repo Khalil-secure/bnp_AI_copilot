@@ -3,9 +3,10 @@ Sales Copilot Backend
 Shell: Electron (testing_copilot)
 Core: WHO / WHAT / WHEN / CONTEXT orchestrator (main.py architecture)
 """
-import asyncio, os, re, sys, json, requests, concurrent.futures
+import asyncio, os, re, sys, json, requests, concurrent.futures, tempfile, subprocess
 import uvicorn
-from fastapi import FastAPI
+import boto3
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -198,6 +199,110 @@ def clear_buffer(): transcript_buffer.clear(); return JSONResponse({"status": "c
 
 @app.get("/meeting/result")
 def meeting_result(): return JSONResponse(_last_search)
+
+# ── MP4 meeting report ─────────────────────────────────────────────────────────
+
+REPORT_PROMPT = """You are analysing a full meeting transcript between a banker and a client.
+
+TRANSCRIPT:
+{transcript}
+
+Generate a structured meeting report with:
+1. **Client** — who was discussed (name, ID if mentioned)
+2. **Key Topics** — max 5 bullets of what was discussed
+3. **Financial Data Mentioned** — any numbers, products, or figures cited
+4. **Action Items** — what the banker needs to do next
+5. **Summary** — 2 sentences max
+
+Be concise. Use the same language as the transcript (FR or EN).
+"""
+
+async def _transcribe_mp4(file_path: str) -> str:
+    """Extract audio from MP4 and transcribe via Amazon Transcribe."""
+    # Extract audio to wav using ffmpeg
+    wav_path = file_path.replace(".mp4", ".wav")
+    proc = await asyncio.to_thread(
+        subprocess.run,
+        ["ffmpeg", "-i", file_path, "-ar", "16000", "-ac", "1", "-y", wav_path],
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed: {proc.stderr.decode()}")
+
+    # Upload to S3 and run Transcribe job
+    bucket = os.getenv("MEETING_S3_BUCKET", "")
+    region = os.getenv("AWS_DEFAULT_REGION", "us-west-2")
+
+    if not bucket:
+        raise RuntimeError("Set MEETING_S3_BUCKET env var to enable MP4 transcription.")
+
+    s3 = boto3.client("s3", region_name=region)
+    job_name = f"meeting-{os.path.basename(wav_path)}-{int(asyncio.get_event_loop().time())}"
+    s3_key = f"meetings/{job_name}.wav"
+
+    await asyncio.to_thread(s3.upload_file, wav_path, bucket, s3_key)
+
+    transcribe = boto3.client("transcribe", region_name=region)
+    await asyncio.to_thread(
+        transcribe.start_transcription_job,
+        TranscriptionJobName=job_name,
+        Media={"MediaFileUri": f"s3://{bucket}/{s3_key}"},
+        MediaFormat="wav",
+        LanguageCode="fr-FR",
+    )
+
+    # Poll for completion
+    for _ in range(120):  # up to 10 min
+        await asyncio.sleep(5)
+        resp = await asyncio.to_thread(
+            transcribe.get_transcription_job, TranscriptionJobName=job_name
+        )
+        status = resp["TranscriptionJob"]["TranscriptionJobStatus"]
+        if status == "COMPLETED":
+            uri = resp["TranscriptionJob"]["Transcript"]["TranscriptFileUri"]
+            text_resp = await asyncio.to_thread(requests.get, uri, timeout=30)
+            transcript = text_resp.json()["results"]["transcripts"][0]["transcript"]
+            # Cleanup
+            await asyncio.to_thread(s3.delete_object, Bucket=bucket, Key=s3_key)
+            os.remove(wav_path)
+            return transcript
+        if status == "FAILED":
+            raise RuntimeError("Transcription job failed.")
+
+    raise RuntimeError("Transcription timed out.")
+
+@app.post("/meeting/report")
+async def meeting_report(file: UploadFile = File(...)):
+    """Accept MP4, transcribe it, return a structured meeting report."""
+    if not file.filename.lower().endswith((".mp4", ".mov", ".webm", ".wav", ".mp3")):
+        return JSONResponse({"error": "Unsupported file type."}, status_code=400)
+
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+        tmp.write(await file.read())
+        tmp_path = tmp.name
+
+    try:
+        transcript = await _transcribe_mp4(tmp_path)
+    except RuntimeError as e:
+        os.remove(tmp_path)
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+    # Generate report via orchestrator
+    prompt = REPORT_PROMPT.format(transcript=transcript[:8000])
+    try:
+        result = await asyncio.to_thread(copilot, prompt)
+        report = _extract_text(result)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    return JSONResponse({
+        "report": report,
+        "transcript_preview": transcript[:500] + ("…" if len(transcript) > 500 else ""),
+        "transcript_length": len(transcript),
+    })
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 7799))

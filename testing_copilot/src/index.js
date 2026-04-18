@@ -1,72 +1,60 @@
 'use strict';
 if (require('electron-squirrel-startup')) process.exit(0);
 
-const { app, ipcMain, BrowserWindow, session } = require('electron');
+const { app, ipcMain, BrowserWindow } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
-const http = require('http');
-
-app.commandLine.appendSwitch('enable-features', 'WebSpeechAPI,SpeechSynthesis');
 
 const PROJECT_ROOT  = path.join(__dirname, '..', '..');
-const VENV_SCRIPTS  = path.join(PROJECT_ROOT, '.venv', 'Scripts');
-const BACKEND_SCRIPT = path.join(PROJECT_ROOT, 'testing_copilot', 'backend', 'agent.py');
-const BACKEND_URL   = 'http://127.0.0.1:7799';
+const VENV_PYTHON   = path.join(PROJECT_ROOT, '.venv', 'Scripts', 'python.exe');
+const MAIN_PY       = path.join(PROJECT_ROOT, 'main.py');
 
 let mainWindow = null;
 let pyProcess  = null;
 
-function startBackend() {
-    pyProcess = spawn('python', [BACKEND_SCRIPT], {
+function startPython() {
+    pyProcess = spawn(VENV_PYTHON, ['-u', MAIN_PY], {
         cwd: PROJECT_ROOT,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, PATH: VENV_SCRIPTS + ';' + process.env.PATH },
+        stdio: ['pipe', 'pipe', 'pipe'],
     });
-    pyProcess.stdout.on('data', d => process.stdout.write(`[py] ${d}`));
-    pyProcess.stderr.on('data', d => process.stderr.write(`[py] ${d}`));
+
+    // Auto-select mode 3 (Meeting Monitor)
+    setTimeout(() => {
+        if (pyProcess && pyProcess.stdin.writable)
+            pyProcess.stdin.write('3\n');
+    }, 500);
+
+    pyProcess.stdout.on('data', d => {
+        if (mainWindow && !mainWindow.isDestroyed())
+            mainWindow.webContents.send('py-out', d.toString());
+    });
+    pyProcess.stderr.on('data', d => {
+        if (mainWindow && !mainWindow.isDestroyed())
+            mainWindow.webContents.send('py-err', d.toString());
+    });
+    pyProcess.on('exit', () => {
+        if (mainWindow && !mainWindow.isDestroyed())
+            mainWindow.webContents.send('py-out', '\n[Process exited]\n');
+    });
 }
 
-function waitForBackend(timeout = 25000) {
-    return new Promise((resolve, reject) => {
-        const deadline = Date.now() + timeout;
-        const ping = () => {
-            http.get(`${BACKEND_URL}/health`, r => {
-                r.statusCode === 200 ? resolve() : retry();
-            }).on('error', retry);
-        };
-        const retry = () => Date.now() > deadline ? reject() : setTimeout(ping, 700);
-        ping();
-    });
-}
+ipcMain.on('py-in',      (_, text) => { if (pyProcess?.stdin.writable) pyProcess.stdin.write(text + '\n'); });
+ipcMain.on('close-app',  ()        => { pyProcess?.kill(); app.quit(); });
+ipcMain.on('minimize-app', ()      => mainWindow?.minimize());
 
-ipcMain.on('close-app',    () => { if (pyProcess) pyProcess.kill(); app.quit(); });
-ipcMain.on('minimize-app', () => mainWindow && mainWindow.minimize());
-
-app.whenReady().then(async () => {
-    session.defaultSession.setPermissionRequestHandler((_, perm, cb) =>
-        cb(['media', 'microphone', 'audioCapture'].includes(perm))
-    );
-
+app.whenReady().then(() => {
     mainWindow = new BrowserWindow({
-        width: 480,
-        height: 700,
+        width: 620, height: 560,
         frame: false,
         transparent: false,
         resizable: true,
         alwaysOnTop: true,
-        backgroundColor: '#1a1a2e',
+        backgroundColor: '#0d0d14',
         webPreferences: { nodeIntegration: true, contextIsolation: false },
     });
+    mainWindow.setContentProtection(true); // invisible to screen share / OBS
     mainWindow.loadFile(path.join(__dirname, 'index.html'));
-
-    startBackend();
-
-    try {
-        await waitForBackend();
-        mainWindow.webContents.send('backend-ready');
-    } catch {
-        mainWindow.webContents.send('backend-error', 'Backend failed to start');
-    }
+    startPython();
 });
 
-app.on('window-all-closed', () => { if (pyProcess) pyProcess.kill(); app.quit(); });
+app.on('window-all-closed', () => { pyProcess?.kill(); app.quit(); });
